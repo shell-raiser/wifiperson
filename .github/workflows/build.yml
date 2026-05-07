@@ -1,0 +1,179 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: build-main
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux AppImage and tarball
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            libnl-3-dev \
+            libnl-genl-3-dev \
+            libqt6charts6-dev \
+            ninja-build \
+            pkg-config \
+            qt6-base-dev \
+            qt6-base-dev-tools \
+            wget
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Stage normal build
+        run: |
+          DESTDIR="$PWD/package-root" cmake --install build --strip
+          mkdir -p dist
+          tar -C package-root -czf dist/wifiman_prototype-linux-x86_64-build.tar.gz .
+
+      - name: Download AppImage tools
+        run: |
+          wget -O linuxdeploy-x86_64.AppImage https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          wget -O linuxdeploy-plugin-qt-x86_64.AppImage https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          wget -O appimagetool-x86_64.AppImage https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x ./*.AppImage
+
+      - name: Build AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: 1
+          OUTPUT: wifiman_prototype-linux-x86_64.AppImage
+        run: |
+          rm -rf AppDir
+          DESTDIR="$PWD/AppDir" cmake --install build --strip
+          export PATH="$PWD:$PATH"
+          export QMAKE="$(command -v qmake6 || command -v qmake)"
+          ./linuxdeploy-x86_64.AppImage \
+            --appdir AppDir \
+            --plugin qt \
+            --output appimage
+          mv "${OUTPUT}" "dist/${OUTPUT}"
+
+      - name: Upload latest build
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-build
+          path: dist/*
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Delete older build artifacts
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const currentRunId = context.runId;
+            const artifactNames = new Set(['linux-build', 'windows-build']);
+            const artifacts = await github.paginate(github.rest.actions.listArtifactsForRepo, {
+              owner,
+              repo,
+              per_page: 100,
+            });
+
+            for (const artifact of artifacts) {
+              if (artifactNames.has(artifact.name) && artifact.workflow_run?.id && artifact.workflow_run.id !== currentRunId) {
+                await github.rest.actions.deleteArtifact({
+                  owner,
+                  repo,
+                  artifact_id: artifact.id,
+                });
+              }
+            }
+
+  windows:
+    name: Windows EXE and installer
+    runs-on: windows-2022
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.6.3'
+          host: windows
+          target: desktop
+          arch: win64_msvc2019_64
+          modules: qtcharts
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}\windows-package"
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Stage Windows bundle
+        shell: pwsh
+        run: |
+          cmake --install build
+          windeployqt --release --compiler-runtime windows-package\bin\wifiman_prototype.exe
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive -Path windows-package\* -DestinationPath dist\wifiman_prototype-windows-x86_64-exe.zip -Force
+
+      - name: Install NSIS
+        run: choco install nsis -y --no-progress
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $nsis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          & $nsis "/DAPP_VERSION=0.1.0" "/DAPP_SOURCE_DIR=${{ github.workspace }}\windows-package" packaging\windows-installer.nsi
+          Move-Item "wifiman_prototype-0.1.0-windows-x86_64-installer.exe" "dist\wifiman_prototype-windows-x86_64-installer.exe" -Force
+
+      - name: Upload latest Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: dist/*
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Delete older build artifacts
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const currentRunId = context.runId;
+            const artifactNames = new Set(['linux-build', 'windows-build']);
+            const artifacts = await github.paginate(github.rest.actions.listArtifactsForRepo, {
+              owner,
+              repo,
+              per_page: 100,
+            });
+
+            for (const artifact of artifacts) {
+              if (artifactNames.has(artifact.name) && artifact.workflow_run?.id && artifact.workflow_run.id !== currentRunId) {
+                await github.rest.actions.deleteArtifact({
+                  owner,
+                  repo,
+                  artifact_id: artifact.id,
+                });
+              }
+            }

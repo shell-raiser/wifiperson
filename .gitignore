@@ -1,0 +1,28 @@
+# Local editor state
+.vscode/
+.agents/
+
+# CMake and Qt-generated build files
+build/
+build-*/
+build-local/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+.qt/
+
+# Build outputs and packages
+*.AppImage
+*.tar
+*.tar.gz
+*.zip
+dist/
+AppDir/
+package-root/
+windows-package/
+*.exe
+
+# Runtime/system noise
+*.log
+.DS_Store

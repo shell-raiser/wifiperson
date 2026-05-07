@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=WiFiMan Prototype
+Comment=Scan nearby Wi-Fi networks and visualize channel usage
+Exec=wifiman_prototype
+Icon=wifiman-prototype
+Categories=Network;Utility;
+Terminal=false
