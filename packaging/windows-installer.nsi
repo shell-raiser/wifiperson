@@ -8,8 +8,12 @@ Unicode true
   !define APP_SOURCE_DIR "..\windows-package"
 !endif
 
+!ifndef APP_OUTPUT
+  !define APP_OUTPUT "wifiman_prototype-${APP_VERSION}-windows-x86_64-installer.exe"
+!endif
+
 Name "WiFiMan Prototype"
-OutFile "wifiman_prototype-${APP_VERSION}-windows-x86_64-installer.exe"
+OutFile "${APP_OUTPUT}"
 InstallDir "$PROGRAMFILES64\WiFiMan Prototype"
 RequestExecutionLevel admin
 

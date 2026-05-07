@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   actions: write
 
 concurrency:
@@ -144,8 +144,12 @@ jobs:
         shell: pwsh
         run: |
           $nsis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
-          & $nsis "/DAPP_VERSION=0.1.0" "/DAPP_SOURCE_DIR=${{ github.workspace }}\windows-package" packaging\windows-installer.nsi
-          Move-Item "wifiman_prototype-0.1.0-windows-x86_64-installer.exe" "dist\wifiman_prototype-windows-x86_64-installer.exe" -Force
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          & $nsis `
+            "/DAPP_VERSION=0.1.0" `
+            "/DAPP_SOURCE_DIR=${{ github.workspace }}\windows-package" `
+            "/DAPP_OUTPUT=${{ github.workspace }}\dist\wifiman_prototype-windows-x86_64-installer.exe" `
+            packaging\windows-installer.nsi
 
       - name: Upload latest Windows build
         uses: actions/upload-artifact@v4
@@ -177,3 +181,45 @@ jobs:
                 });
               }
             }
+
+  release:
+    name: Publish commit release
+    runs-on: ubuntu-24.04
+    needs:
+      - linux
+      - windows
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.sha }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          mapfile -t files < <(find release-assets -type f | sort)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No build files were downloaded."
+            exit 1
+          fi
+
+          short_sha="${COMMIT_SHA:0:12}"
+          release_title="Build ${short_sha}"
+          release_notes="Automated build for commit ${COMMIT_SHA}."
+
+          if gh release view "${TAG}" --repo "${REPO}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" "${files[@]}" --repo "${REPO}" --clobber
+          else
+            gh release create "${TAG}" "${files[@]}" \
+              --repo "${REPO}" \
+              --target "${COMMIT_SHA}" \
+              --title "${release_title}" \
+              --notes "${release_notes}"
+          fi
