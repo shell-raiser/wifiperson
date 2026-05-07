@@ -1,5 +1,5 @@
 QT += widgets charts core network
-TARGET = wifiman_prototype
+TARGET = wifiperson
 TEMPLATE = app
 CONFIG += c++17
 

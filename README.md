@@ -1,6 +1,6 @@
-# WiFiMan Prototype
+# WiFiperson
 
-WiFiMan Prototype is a Qt 6 desktop app that scans nearby Wi-Fi networks through nl80211/libnl and visualizes channel usage.
+WiFiperson is a Qt 6 desktop app that scans nearby Wi-Fi networks and visualizes channel usage.
 
 ## Requirements
 
@@ -34,4 +34,4 @@ To install into a staging directory:
 DESTDIR="$PWD/package-root" cmake --install build
 ```
 
-GitHub Actions builds Linux packages and Windows packages on every push to `main`. The Windows artifact contains a deployed EXE bundle zip and an NSIS installer.
+GitHub Actions builds Linux packages and Windows packages on every push to `main`. The Windows artifact contains a deployed EXE bundle zip and a Qt Installer Framework installer. Each successful run publishes the build files to a GitHub release tagged as `build-<commit-sha>`.

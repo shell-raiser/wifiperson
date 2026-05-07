@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(WiFiManPrototype VERSION 0.1.0 LANGUAGES CXX)
+project(WiFiperson VERSION 0.1.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
@@ -23,7 +23,7 @@ else()
     message(FATAL_ERROR "Wi-Fi scanning backend is not implemented for this platform.")
 endif()
 
-add_executable(wifiman_prototype ${APP_EXECUTABLE_TYPE}
+add_executable(wifiperson ${APP_EXECUTABLE_TYPE}
     main.cpp
     mainwindow.h
     mainwindow.cpp
@@ -35,7 +35,7 @@ add_executable(wifiman_prototype ${APP_EXECUTABLE_TYPE}
 )
 
 target_link_libraries(
-    wifiman_prototype
+    wifiperson
     PRIVATE
         Qt6::Core
         Qt6::Widgets
@@ -44,25 +44,25 @@ target_link_libraries(
 )
 
 if(TARGET PkgConfig::LIBNL)
-    target_link_libraries(wifiman_prototype PRIVATE PkgConfig::LIBNL)
+    target_link_libraries(wifiperson PRIVATE PkgConfig::LIBNL)
 endif()
 
 if(WIN32)
-    target_compile_definitions(wifiman_prototype PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
-    target_link_libraries(wifiman_prototype PRIVATE Wlanapi)
+    target_compile_definitions(wifiperson PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(wifiperson PRIVATE Wlanapi)
 endif()
 
-set_target_properties(wifiman_prototype PROPERTIES
+set_target_properties(wifiperson PROPERTIES
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED ON
     CXX_EXTENSIONS OFF
 )
 
-install(TARGETS wifiman_prototype RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(TARGETS wifiperson RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 if(UNIX AND NOT APPLE)
-    install(FILES packaging/io.github.wifiperson.wifiman-prototype.desktop
+    install(FILES packaging/io.github.wifiperson.wifiperson.desktop
             DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
-    install(FILES packaging/wifiman-prototype.svg
+    install(FILES packaging/wifiperson.svg
             DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
 endif()

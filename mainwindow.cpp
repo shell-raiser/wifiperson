@@ -159,7 +159,7 @@ void MainWindow::changeEvent(QEvent *event)
 
 void MainWindow::setupUi()
 {
-    setWindowTitle("WiFiMan Prototype");
+    setWindowTitle("WiFiperson");
     resize(1180, 760);
 
     chart = new QChart();

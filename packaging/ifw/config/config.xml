@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Installer>
+    <Name>WiFiperson</Name>
+    <Version>0.1.0</Version>
+    <Title>WiFiperson</Title>
+    <Publisher>WiFiPerson</Publisher>
+    <StartMenuDir>WiFiperson</StartMenuDir>
+    <TargetDir>@ApplicationsDir@/WiFiperson</TargetDir>
+    <WizardStyle>Modern</WizardStyle>
+    <MaintenanceToolName>WiFipersonMaintenanceTool</MaintenanceToolName>
+    <RemoveTargetDir>true</RemoveTargetDir>
+</Installer>

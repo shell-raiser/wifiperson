@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Package>
+    <DisplayName>WiFiperson</DisplayName>
+    <Description>Scan nearby Wi-Fi networks and visualize channel usage.</Description>
+    <Version>0.1.0</Version>
+    <ReleaseDate>2026-05-07</ReleaseDate>
+    <Default>true</Default>
+    <Script>installscript.qs</Script>
+</Package>

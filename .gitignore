@@ -21,6 +21,7 @@ dist/
 AppDir/
 package-root/
 windows-package/
+installer-packages/
 *.exe
 
 # Runtime/system noise
