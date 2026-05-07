@@ -32,12 +32,12 @@ jobs:
             libgl1-mesa-dev \
             libnl-3-dev \
             libnl-genl-3-dev \
-            libqt6charts6-dev \
             ninja-build \
             pkg-config \
+            qmake6 \
+            qt6-charts-dev \
             qt6-base-dev \
             qt6-base-dev-tools \
-            qt6-qmake \
             wget
 
       - name: Configure
