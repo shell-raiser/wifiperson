@@ -8,10 +8,15 @@
 #include <netlink/msg.h>
 #include <netlink/socket.h>
 
+#include <QDateTime>
+#include <QProcess>
 #include <QSet>
 #include <QThread>
 
+#include <poll.h>
+
 #include <cstdint>
+#include <utility>
 
 namespace {
 
@@ -21,9 +26,21 @@ struct NlContext
     int familyId = -1;
 };
 
+struct WirelessInterface
+{
+    int index = -1;
+    QString name;
+};
+
 struct InterfaceDumpContext
 {
-    QVector<int> interfaceIndexes;
+    QVector<WirelessInterface> interfaces;
+};
+
+struct ScanWaitContext
+{
+    bool completed = false;
+    bool aborted = false;
 };
 
 struct WiphyDumpContext
@@ -228,9 +245,18 @@ int interfaceDumpCallback(nl_msg *message, void *arg)
     }
 
     const int interfaceIndex = nla_get_u32(attributes[NL80211_ATTR_IFINDEX]);
-    if (!context->interfaceIndexes.contains(interfaceIndex)) {
-        context->interfaceIndexes.append(interfaceIndex);
+    for (const WirelessInterface &iface : std::as_const(context->interfaces)) {
+        if (iface.index == interfaceIndex) {
+            return NL_SKIP;
+        }
     }
+
+    WirelessInterface iface;
+    iface.index = interfaceIndex;
+    if (attributes[NL80211_ATTR_IFNAME] != nullptr) {
+        iface.name = QString::fromUtf8(static_cast<const char *>(nla_data(attributes[NL80211_ATTR_IFNAME])));
+    }
+    context->interfaces.append(iface);
 
     return NL_SKIP;
 }
@@ -372,7 +398,7 @@ BandSupport queryBandSupport(NlContext *context, QString *errorMessage)
     return dumpContext.support;
 }
 
-QVector<int> queryInterfaceIndexes(NlContext *context, QString *errorMessage)
+QVector<WirelessInterface> queryWirelessInterfaces(NlContext *context, QString *errorMessage)
 {
     InterfaceDumpContext dumpContext;
 
@@ -389,14 +415,14 @@ QVector<int> queryInterfaceIndexes(NlContext *context, QString *errorMessage)
         return {};
     }
 
-    return dumpContext.interfaceIndexes;
+    return dumpContext.interfaces;
 }
 
-QVector<WiFiNetwork> queryScanResults(NlContext *context, const QVector<int> &interfaceIndexes, QString *errorMessage)
+QVector<WiFiNetwork> queryScanResults(NlContext *context, const QVector<WirelessInterface> &interfaces, QString *errorMessage)
 {
     ScanDumpContext dumpContext;
 
-    for (int interfaceIndex : interfaceIndexes) {
+    for (const WirelessInterface &iface : interfaces) {
         nl_msg *message = nlmsg_alloc();
         if (message == nullptr) {
             if (errorMessage != nullptr) {
@@ -406,7 +432,7 @@ QVector<WiFiNetwork> queryScanResults(NlContext *context, const QVector<int> &in
         }
 
         genlmsg_put(message, 0, 0, context->familyId, 0, NLM_F_DUMP, NL80211_CMD_GET_SCAN, 0);
-        nla_put_u32(message, NL80211_ATTR_IFINDEX, interfaceIndex);
+        nla_put_u32(message, NL80211_ATTR_IFINDEX, iface.index);
 
         QString requestError;
         if (executeNetlinkRequest(context->socket, message, scanDumpCallback, &dumpContext, &requestError) < 0) {
@@ -419,7 +445,7 @@ QVector<WiFiNetwork> queryScanResults(NlContext *context, const QVector<int> &in
     return dumpContext.networks;
 }
 
-bool triggerActiveScan(NlContext *context, int interfaceIndex, QString *errorMessage)
+bool triggerActiveScan(NlContext *context, const WirelessInterface &iface, QString *errorMessage)
 {
     nl_msg *message = nlmsg_alloc();
     if (message == nullptr) {
@@ -430,7 +456,7 @@ bool triggerActiveScan(NlContext *context, int interfaceIndex, QString *errorMes
     }
 
     genlmsg_put(message, 0, 0, context->familyId, 0, 0, NL80211_CMD_TRIGGER_SCAN, 0);
-    nla_put_u32(message, NL80211_ATTR_IFINDEX, interfaceIndex);
+    nla_put_u32(message, NL80211_ATTR_IFINDEX, iface.index);
 
     nlattr *ssidNest = nla_nest_start(message, NL80211_ATTR_SCAN_SSIDS);
     if (ssidNest == nullptr) {
@@ -446,6 +472,75 @@ bool triggerActiveScan(NlContext *context, int interfaceIndex, QString *errorMes
     nla_nest_end(message, ssidNest);
 
     return executeNetlinkRequest(context->socket, message, ignoreValidMessage, nullptr, errorMessage) >= 0;
+}
+
+int scanEventCallback(nl_msg *message, void *arg)
+{
+    auto *context = static_cast<ScanWaitContext *>(arg);
+    nlmsghdr *header = nlmsg_hdr(message);
+    genlmsghdr *genlHeader = static_cast<genlmsghdr *>(nlmsg_data(header));
+
+    if (genlHeader->cmd == NL80211_CMD_NEW_SCAN_RESULTS) {
+        context->completed = true;
+        return NL_STOP;
+    }
+
+    if (genlHeader->cmd == NL80211_CMD_SCAN_ABORTED) {
+        context->aborted = true;
+        return NL_STOP;
+    }
+
+    return NL_SKIP;
+}
+
+bool waitForScanCompletion(nl_sock *socket, int timeoutMs)
+{
+    nl_cb *callbacks = nl_cb_alloc(NL_CB_DEFAULT);
+    if (callbacks == nullptr) {
+        QThread::msleep(timeoutMs);
+        return false;
+    }
+
+    ScanWaitContext waitContext;
+    nl_cb_set(callbacks, NL_CB_VALID, NL_CB_CUSTOM, scanEventCallback, &waitContext);
+
+    const qint64 deadline = QDateTime::currentMSecsSinceEpoch() + timeoutMs;
+    while (!waitContext.completed && !waitContext.aborted) {
+        const qint64 remaining = deadline - QDateTime::currentMSecsSinceEpoch();
+        if (remaining <= 0) {
+            break;
+        }
+
+        pollfd fd = {};
+        fd.fd = nl_socket_get_fd(socket);
+        fd.events = POLLIN;
+        const int pollResult = poll(&fd, 1, static_cast<int>(qMin<qint64>(remaining, 750)));
+        if (pollResult > 0 && (fd.revents & POLLIN) != 0) {
+            nl_recvmsgs(socket, callbacks);
+        }
+    }
+
+    nl_cb_put(callbacks);
+    return waitContext.completed;
+}
+
+bool triggerScanWithNetworkManager(const QVector<WirelessInterface> &interfaces)
+{
+    bool triggered = false;
+    for (const WirelessInterface &iface : interfaces) {
+        QStringList arguments = {QStringLiteral("device"), QStringLiteral("wifi"), QStringLiteral("rescan")};
+        if (!iface.name.isEmpty()) {
+            arguments << QStringLiteral("ifname") << iface.name;
+        }
+
+        QProcess nmcli;
+        nmcli.start(QStringLiteral("nmcli"), arguments);
+        if (nmcli.waitForFinished(7000) && nmcli.exitStatus() == QProcess::NormalExit && nmcli.exitCode() == 0) {
+            triggered = true;
+        }
+    }
+
+    return triggered;
 }
 
 QString normalizeScanFailureMessage(const QString &message)
@@ -487,8 +582,8 @@ WiFiScanOutcome performLinuxWifiScan()
 
     const BandSupport support = queryBandSupport(&context, nullptr);
     outcome.support = support;
-    const QVector<int> interfaceIndexes = queryInterfaceIndexes(&context, &errorMessage);
-    if (interfaceIndexes.isEmpty()) {
+    const QVector<WirelessInterface> interfaces = queryWirelessInterfaces(&context, &errorMessage);
+    if (interfaces.isEmpty()) {
         closeNetlinkContext(&context);
         if (errorMessage.isEmpty()) {
             errorMessage = "No wireless interfaces were exposed by nl80211.";
@@ -497,8 +592,20 @@ WiFiScanOutcome performLinuxWifiScan()
         return outcome;
     }
 
+    const int scanGroupId = genl_ctrl_resolve_grp(context.socket, NL80211_GENL_NAME, "scan");
+    const bool receivesScanEvents = scanGroupId >= 0 && nl_socket_add_membership(context.socket, scanGroupId) >= 0;
+
     QString triggerError;
-    const bool triggerWorked = triggerActiveScan(&context, interfaceIndexes.first(), &triggerError);
+    bool triggerWorked = false;
+    for (const WirelessInterface &iface : interfaces) {
+        QString perInterfaceError;
+        if (triggerActiveScan(&context, iface, &perInterfaceError)) {
+            triggerWorked = true;
+        } else if (triggerError.isEmpty()) {
+            triggerError = perInterfaceError;
+        }
+    }
+
     if (!triggerWorked) {
         triggerError = normalizeScanFailureMessage(triggerError);
         if (isWifiOffFailure(triggerError)) {
@@ -506,13 +613,17 @@ WiFiScanOutcome performLinuxWifiScan()
             outcome.errorMessage = triggerError;
             return outcome;
         }
+
+        triggerWorked = triggerScanWithNetworkManager(interfaces);
     }
 
     if (triggerWorked) {
-        QThread::msleep(2500);
+        if (!receivesScanEvents || !waitForScanCompletion(context.socket, 8000)) {
+            QThread::msleep(2500);
+        }
     }
 
-    const QVector<WiFiNetwork> networks = queryScanResults(&context, interfaceIndexes, &errorMessage);
+    const QVector<WiFiNetwork> networks = queryScanResults(&context, interfaces, &errorMessage);
     closeNetlinkContext(&context);
 
     if (networks.isEmpty()) {

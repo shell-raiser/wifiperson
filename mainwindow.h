@@ -13,6 +13,7 @@
 QT_BEGIN_NAMESPACE
 class QLabel;
 class QPushButton;
+class QStackedWidget;
 class QTableWidget;
 class QToolButton;
 class QWidget;
@@ -40,6 +41,8 @@ private slots:
     void refreshScan();
     void handleScanFinished(const QVector<WiFiNetwork> &networks, const BandSupport &support);
     void handleScanError(const QString &message, const BandSupport &support);
+    void showNetworkDetails(int row, int column);
+    void showNetworkList();
 
 private:
     QVector<WiFiNetwork> filteredNetworks() const;
@@ -56,18 +59,24 @@ private:
     void updateBandButtonVisibility();
     void updateChart(const QVector<WiFiNetwork> &networks);
     void updateChartTheme();
+    void updateDetailTable(const WiFiNetwork &network);
     void updateHoverTooltip(const QPoint &mousePos);
     void updateTable(const QVector<WiFiNetwork> &networks);
     void setStatusMessage(const QString &message) const;
 
+    QStackedWidget *pageStack = nullptr;
+    QWidget *listPage = nullptr;
+    QWidget *detailPage = nullptr;
     QChartView *chartView = nullptr;
     QChart *chart = nullptr;
     QCategoryAxis *axisX = nullptr;
     QValueAxis *axisY = nullptr;
     QTableWidget *networkTable = nullptr;
+    QTableWidget *detailTable = nullptr;
     QLabel *invalidStateLabel = nullptr;
     QLabel *statusLabel = nullptr;
     QPushButton *refreshButton = nullptr;
+    QPushButton *backButton = nullptr;
     QToolButton *band24Button = nullptr;
     QToolButton *band5Button = nullptr;
     QToolButton *band6Button = nullptr;

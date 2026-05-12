@@ -17,7 +17,9 @@
 #include <QPainter>
 #include <QPen>
 #include <QPushButton>
+#include <QScrollBar>
 #include <QSignalBlocker>
+#include <QStackedWidget>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QToolButton>
@@ -25,6 +27,8 @@
 #include <QVBoxLayout>
 #include <QThread>
 #include <QtMath>
+
+#include <utility>
 
 namespace {
 
@@ -162,6 +166,10 @@ void MainWindow::setupUi()
     setWindowTitle("WiFiperson");
     resize(1180, 760);
 
+    pageStack = new QStackedWidget(this);
+    listPage = new QWidget(this);
+    detailPage = new QWidget(this);
+
     chart = new QChart();
     chart->legend()->hide();
     chart->setAnimationOptions(QChart::SeriesAnimations);
@@ -195,9 +203,11 @@ void MainWindow::setupUi()
     statusLabel->hide();
 
     refreshButton = new QPushButton("Refresh Scan", this);
+    refreshButton->setMinimumHeight(44);
     connect(refreshButton, &QPushButton::clicked, this, &MainWindow::refreshScan);
 
     band24Button = new QToolButton(this);
+    band24Button->setMinimumSize(88, 44);
     band24Button->setText("2.4 GHz");
     band24Button->setCheckable(true);
     connect(band24Button, &QToolButton::toggled, this, [this](bool checked) {
@@ -218,6 +228,7 @@ void MainWindow::setupUi()
     });
 
     band5Button = new QToolButton(this);
+    band5Button->setMinimumSize(88, 44);
     band5Button->setText("5 GHz");
     band5Button->setCheckable(true);
     connect(band5Button, &QToolButton::toggled, this, [this](bool checked) {
@@ -238,6 +249,7 @@ void MainWindow::setupUi()
     });
 
     band6Button = new QToolButton(this);
+    band6Button->setMinimumSize(88, 44);
     band6Button->setText("6 GHz");
     band6Button->setCheckable(true);
     connect(band6Button, &QToolButton::toggled, this, [this](bool checked) {
@@ -280,6 +292,12 @@ void MainWindow::setupUi()
     networkTable->setAlternatingRowColors(true);
     networkTable->setSortingEnabled(true);
     networkTable->horizontalHeader()->setSortIndicatorShown(true);
+    networkTable->verticalHeader()->setDefaultSectionSize(44);
+    networkTable->setIconSize(QSize(36, 36));
+    networkTable->setTextElideMode(Qt::ElideRight);
+    networkTable->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+    networkTable->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    connect(networkTable, &QTableWidget::cellClicked, this, &MainWindow::showNetworkDetails);
 
     auto *layout = new QVBoxLayout();
     layout->addWidget(chartView, 3);
@@ -288,9 +306,40 @@ void MainWindow::setupUi()
     layout->addWidget(statusLabel);
     layout->addWidget(networkTable, 2);
 
-    auto *centralWidget = new QWidget(this);
-    centralWidget->setLayout(layout);
-    setCentralWidget(centralWidget);
+    listPage->setLayout(layout);
+
+    backButton = new QPushButton("Back to networks", this);
+    backButton->setMinimumHeight(44);
+    connect(backButton, &QPushButton::clicked, this, &MainWindow::showNetworkList);
+
+    detailTable = new QTableWidget(this);
+    detailTable->setColumnCount(2);
+    detailTable->setHorizontalHeaderLabels({"Property", "Value"});
+    detailTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    detailTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    detailTable->verticalHeader()->setVisible(false);
+    detailTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    detailTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    detailTable->setAlternatingRowColors(true);
+    detailTable->verticalHeader()->setDefaultSectionSize(44);
+    detailTable->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+    detailTable->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+
+    auto *detailLayout = new QVBoxLayout();
+    detailLayout->addWidget(backButton);
+    detailLayout->addWidget(detailTable, 1);
+    detailPage->setLayout(detailLayout);
+
+    pageStack->addWidget(listPage);
+    pageStack->addWidget(detailPage);
+    pageStack->setCurrentWidget(listPage);
+
+    setCentralWidget(pageStack);
+
+    setStyleSheet(QStringLiteral(
+        "QPushButton, QToolButton { padding: 10px 16px; font-size: 15px; }"
+        "QTableView { font-size: 15px; }"
+        "QHeaderView::section { padding: 8px; font-size: 14px; }"));
 }
 
 void MainWindow::refreshScan()
@@ -320,12 +369,10 @@ void MainWindow::handleScanFinished(const QVector<WiFiNetwork> &networks, const 
     refreshButton->setEnabled(true);
     bandSupport = support;
 
+    finishScanWithNetworks(networks);
     if (networks.isEmpty()) {
-        showInvalidState(
-            "Wi-Fi scan returned no usable results.\n\n"
-            "Check that the adapter is up and that the driver exposes recent scan results through nl80211.");
-    } else {
-        finishScanWithNetworks(networks);
+        setStatusMessage(
+            "Scan completed, but no SSIDs were found. The channel axis is still shown for the selected band.");
     }
 
     if (scanThread != nullptr) {
@@ -558,24 +605,11 @@ void MainWindow::updateChart(const QVector<WiFiNetwork> &networks)
         areaSeries->attachAxis(axisY);
     }
 
-    if (networks.isEmpty()) {
-        clearCategoryAxis(axisX);
-        axisX->setStartValue(0.5);
-        axisX->append("1", 1.5);
-        axisX->append("2", 2.5);
-        axisX->append("3", 3.5);
-        axisX->append("4", 4.5);
-        axisX->setRange(0.5, 4.5);
-        axisY->setRange(-90, -30);
-        chart->setTitle("Wi-Fi Spectrum");
-        return;
-    }
-
     const WiFiBand activeBand = activeBandFromFlags(show24GHz, show5GHz, show6GHz);
     const QVector<int> standardChannels = standardChannelsForBand(activeBand);
 
-    int minChannel = networks.first().channel;
-    int maxChannel = networks.first().channel;
+    int minChannel = standardChannels.first();
+    int maxChannel = standardChannels.last();
     for (const WiFiNetwork &network : networks) {
         minChannel = qMin(minChannel, network.channel);
         maxChannel = qMax(maxChannel, network.channel);
@@ -587,12 +621,6 @@ void MainWindow::updateChart(const QVector<WiFiNetwork> &networks)
     qreal axisEnd = upperChannelBoundary(standardChannels.last(), activeBand);
 
     for (int channel : standardChannels) {
-        const bool includeChannel =
-            activeBand == WiFiBand::Band24 || (channel >= minChannel - 8 && channel <= maxChannel + 8);
-        if (!includeChannel) {
-            continue;
-        }
-
         const qreal lowerBoundary = lowerChannelBoundary(channel, activeBand);
         const qreal upperBoundary = upperChannelBoundary(channel, activeBand);
         if (!axisStarted) {
@@ -606,9 +634,13 @@ void MainWindow::updateChart(const QVector<WiFiNetwork> &networks)
 
     axisX->setRange(axisStart, axisEnd);
 
-    const int paddedMin = qMax(-100, static_cast<int>(qFloor((minSignal - 10) / 5.0) * 5.0));
-    const int paddedMax = qMin(-20, static_cast<int>(qCeil((maxSignal + 10) / 5.0) * 5.0));
-    axisY->setRange(paddedMin, qMax(paddedMax, paddedMin + 20));
+    if (!haveSignals) {
+        axisY->setRange(-100, -20);
+    } else {
+        const int paddedMin = qMax(-100, static_cast<int>(qFloor((minSignal - 10) / 5.0) * 5.0));
+        const int paddedMax = qMin(-20, static_cast<int>(qCeil((maxSignal + 10) / 5.0) * 5.0));
+        axisY->setRange(paddedMin, qMax(paddedMax, paddedMin + 20));
+    }
     chart->setTitle(QStringLiteral("Wi-Fi Spectrum Utilization (%1 networks)").arg(networks.size()));
 }
 
@@ -633,6 +665,47 @@ void MainWindow::updateChartTheme()
     axisY->setLabelsBrush(textColor);
     axisY->setTitleBrush(textColor);
     axisY->setGridLineColor(gridColor);
+}
+
+void MainWindow::updateDetailTable(const WiFiNetwork &network)
+{
+    const QVector<QPair<QString, QString>> rows = {
+        {QStringLiteral("SSID"), network.ssid},
+        {QStringLiteral("BSSID / access point MAC address"), network.bssid},
+        {QStringLiteral("Band"), bandLabel(network.band)},
+        {QStringLiteral("Channel"), channelLabel(network)},
+        {QStringLiteral("Frequency"), QStringLiteral("%1 MHz").arg(network.frequencyMHz)},
+        {QStringLiteral("Signal strength"), QStringLiteral("%1 dBm").arg(network.signalDbm)},
+    };
+
+    detailTable->setRowCount(rows.size());
+    for (int row = 0; row < rows.size(); ++row) {
+        detailTable->setItem(row, 0, new QTableWidgetItem(rows.at(row).first));
+        detailTable->setItem(row, 1, new QTableWidgetItem(rows.at(row).second));
+    }
+}
+
+void MainWindow::showNetworkDetails(int row, int column)
+{
+    Q_UNUSED(column);
+    QTableWidgetItem *bssidItem = networkTable->item(row, 2);
+    if (bssidItem == nullptr) {
+        return;
+    }
+
+    const QString bssid = bssidItem->text();
+    for (const WiFiNetwork &network : std::as_const(visibleNetworks)) {
+        if (network.bssid == bssid) {
+            updateDetailTable(network);
+            pageStack->setCurrentWidget(detailPage);
+            return;
+        }
+    }
+}
+
+void MainWindow::showNetworkList()
+{
+    pageStack->setCurrentWidget(listPage);
 }
 
 void MainWindow::updateHoverTooltip(const QPoint &mousePos)
