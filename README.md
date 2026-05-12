@@ -34,4 +34,4 @@ To install into a staging directory:
 DESTDIR="$PWD/package-root" cmake --install build
 ```
 
-GitHub Actions builds Linux packages and Windows packages on every push to `main`. The Windows artifact contains a deployed EXE bundle zip and a Qt Installer Framework installer. Each successful run publishes the build files to a GitHub release tagged as `build-<commit-sha>`.
+GitHub Actions builds Linux packages and Windows packages on every push to `main`. The Windows artifact contains a single Qt Installer Framework EXE instead of a zipped deployed folder. Each successful run publishes the build files to a GitHub release tagged as `build-<commit-sha>`.

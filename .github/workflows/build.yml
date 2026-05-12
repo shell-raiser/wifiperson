@@ -129,13 +129,11 @@ jobs:
       - name: Build
         run: cmake --build build --config Release --parallel
 
-      - name: Stage Windows bundle
+      - name: Stage Windows app
         shell: pwsh
         run: |
           cmake --install build --config Release
           windeployqt --release --compiler-runtime windows-package\bin\wifiperson.exe
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Compress-Archive -Path windows-package\* -DestinationPath dist\wifiperson-windows-x86_64-exe.zip -Force
 
       - name: Build installer
         shell: pwsh
@@ -147,7 +145,7 @@ jobs:
           binarycreator --offline-only `
             -c packaging\ifw\config\config.xml `
             -p installer-packages `
-            dist\wifiperson-windows-x86_64-installer.exe
+            dist\wifiperson-windows-x86_64.exe
 
       - name: Upload latest Windows build
         uses: actions/upload-artifact@v7
