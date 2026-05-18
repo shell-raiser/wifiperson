@@ -9,13 +9,16 @@
 #include <QtCharts/QValueAxis>
 
 #include <QColor>
+#include <QComboBox>
 #include <QEvent>
 #include <QHeaderView>
+#include <QIcon>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPen>
+#include <QPixmap>
 #include <QPushButton>
 #include <QScrollBar>
 #include <QSignalBlocker>
@@ -28,9 +31,13 @@
 #include <QThread>
 #include <QtMath>
 
+#include <algorithm>
 #include <utility>
 
 namespace {
+
+constexpr int DefaultScanIntervalMs = 30000;
+constexpr int CombinedBandMinimumWidth = 980;
 
 QColor blendWithWindow(const QColor &base, bool darkMode)
 {
@@ -83,17 +90,22 @@ QVector<int> standardChannelsForBand(WiFiBand band)
     return channels;
 }
 
-WiFiBand activeBandFromFlags(bool show24GHz, bool show5GHz, bool show6GHz)
+QVector<WiFiBand> activeBandsFromFlags(bool show24GHz, bool show5GHz, bool show6GHz)
 {
+    QVector<WiFiBand> bands;
+    if (show24GHz) {
+        bands.append(WiFiBand::Band24);
+    }
     if (show5GHz) {
-        return WiFiBand::Band5;
+        bands.append(WiFiBand::Band5);
     }
     if (show6GHz) {
-        return WiFiBand::Band6;
+        bands.append(WiFiBand::Band6);
     }
-
-    Q_UNUSED(show24GHz);
-    return WiFiBand::Band24;
+    if (bands.isEmpty()) {
+        bands.append(WiFiBand::Band24);
+    }
+    return bands;
 }
 
 qreal lowerChannelBoundary(int channel, WiFiBand band)
@@ -126,7 +138,10 @@ MainWindow::MainWindow(QWidget *parent)
 
     scanTimer = new QTimer(this);
     connect(scanTimer, &QTimer::timeout, this, &MainWindow::refreshScan);
-    scanTimer->start(8000);
+    scanTimer->start(DefaultScanIntervalMs);
+
+    scanSpinnerTimer = new QTimer(this);
+    connect(scanSpinnerTimer, &QTimer::timeout, this, &MainWindow::updateScanSpinner);
 
     refreshScan();
 }
@@ -159,6 +174,12 @@ void MainWindow::changeEvent(QEvent *event)
     }
 
     QMainWindow::changeEvent(event);
+}
+
+void MainWindow::resizeEvent(QResizeEvent *event)
+{
+    QMainWindow::resizeEvent(event);
+    updateCombinedBandAvailability();
 }
 
 void MainWindow::setupUi()
@@ -212,10 +233,9 @@ void MainWindow::setupUi()
     band24Button->setCheckable(true);
     connect(band24Button, &QToolButton::toggled, this, [this](bool checked) {
         if (!checked) {
-            if (!show24GHz && !show5GHz && !show6GHz) {
+            if (show24GHz && !show5GHz && !show6GHz) {
                 const QSignalBlocker blocker(band24Button);
                 band24Button->setChecked(true);
-                show24GHz = true;
             }
             return;
         }
@@ -233,10 +253,9 @@ void MainWindow::setupUi()
     band5Button->setCheckable(true);
     connect(band5Button, &QToolButton::toggled, this, [this](bool checked) {
         if (!checked) {
-            if (!show24GHz && !show5GHz && !show6GHz) {
+            if (!show24GHz && show5GHz && !show6GHz) {
                 const QSignalBlocker blocker(band5Button);
                 band5Button->setChecked(true);
-                show5GHz = true;
             }
             return;
         }
@@ -254,10 +273,9 @@ void MainWindow::setupUi()
     band6Button->setCheckable(true);
     connect(band6Button, &QToolButton::toggled, this, [this](bool checked) {
         if (!checked) {
-            if (!show24GHz && !show5GHz && !show6GHz) {
+            if (!show24GHz && !show5GHz && show6GHz) {
                 const QSignalBlocker blocker(band6Button);
                 band6Button->setChecked(true);
-                show6GHz = true;
             }
             return;
         }
@@ -269,23 +287,54 @@ void MainWindow::setupUi()
         applyFilters();
     });
 
+    combinedBandButton = new QToolButton(this);
+    combinedBandButton->setMinimumSize(112, 44);
+    combinedBandButton->setText("2.4 + 5 GHz");
+    combinedBandButton->setCheckable(true);
+    connect(combinedBandButton, &QToolButton::toggled, this, [this](bool checked) {
+        if (!checked) {
+            if (show24GHz && show5GHz && !show6GHz) {
+                const QSignalBlocker blocker(combinedBandButton);
+                combinedBandButton->setChecked(true);
+            }
+            return;
+        }
+
+        show24GHz = true;
+        show5GHz = true;
+        show6GHz = false;
+        syncBandButtons();
+        applyFilters();
+    });
+
+    scanIntervalCombo = new QComboBox(this);
+    scanIntervalCombo->setMinimumHeight(44);
+    scanIntervalCombo->addItem("Poll: 30s", DefaultScanIntervalMs);
+    scanIntervalCombo->addItem("Poll: 60s", 60000);
+    scanIntervalCombo->addItem("Poll: 5 min", 300000);
+    scanIntervalCombo->addItem("Poll: Off", 0);
+    connect(scanIntervalCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, &MainWindow::updateScanInterval);
+
     auto *controlsLayout = new QHBoxLayout();
     controlsLayout->addWidget(refreshButton);
     controlsLayout->addWidget(band24Button);
     controlsLayout->addWidget(band5Button);
+    controlsLayout->addWidget(combinedBandButton);
     controlsLayout->addWidget(band6Button);
+    controlsLayout->addWidget(scanIntervalCombo);
     controlsLayout->addStretch(1);
 
     networkTable = new QTableWidget(this);
-    networkTable->setColumnCount(6);
+    networkTable->setColumnCount(7);
     networkTable->setHorizontalHeaderLabels(
-        {"Color", "SSID", "BSSID", "Channel", "Signal (dBm)", "Frequency (MHz)"});
+        {"Color", "SSID", "BSSID", "Band", "Channel", "Signal (dBm)", "Frequency (MHz)"});
     networkTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     networkTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
     networkTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
     networkTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
     networkTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
     networkTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
+    networkTable->horizontalHeader()->setSectionResizeMode(6, QHeaderView::ResizeToContents);
     networkTable->verticalHeader()->setVisible(false);
     networkTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     networkTable->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -325,9 +374,30 @@ void MainWindow::setupUi()
     detailTable->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
     detailTable->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
 
+    interferenceLabel = new QLabel("Interfering SSIDs", this);
+    interferenceLabel->setWordWrap(true);
+
+    interferenceTable = new QTableWidget(this);
+    interferenceTable->setColumnCount(5);
+    interferenceTable->setHorizontalHeaderLabels({"SSID", "BSSID", "Band", "Channel", "Signal (dBm)"});
+    interferenceTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    interferenceTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    interferenceTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    interferenceTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    interferenceTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    interferenceTable->verticalHeader()->setVisible(false);
+    interferenceTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    interferenceTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    interferenceTable->setAlternatingRowColors(true);
+    interferenceTable->verticalHeader()->setDefaultSectionSize(44);
+    interferenceTable->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+    interferenceTable->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+
     auto *detailLayout = new QVBoxLayout();
     detailLayout->addWidget(backButton);
     detailLayout->addWidget(detailTable, 1);
+    detailLayout->addWidget(interferenceLabel);
+    detailLayout->addWidget(interferenceTable, 1);
     detailPage->setLayout(detailLayout);
 
     pageStack->addWidget(listPage);
@@ -346,13 +416,12 @@ void MainWindow::refreshScan()
 {
     if (scanInProgress) {
         refreshQueued = true;
-        setStatusMessage("A scan is already in progress. Refresh will run again as soon as it finishes.");
         return;
     }
 
     scanInProgress = true;
     refreshQueued = false;
-    refreshButton->setEnabled(false);
+    setRefreshButtonLoading(true);
     setStatusMessage(QString());
 
     scanThread = new WiFiScanThread(this);
@@ -366,7 +435,7 @@ void MainWindow::refreshScan()
 void MainWindow::handleScanFinished(const QVector<WiFiNetwork> &networks, const BandSupport &support)
 {
     scanInProgress = false;
-    refreshButton->setEnabled(true);
+    restoreRefreshButton();
     bandSupport = support;
 
     finishScanWithNetworks(networks);
@@ -388,7 +457,7 @@ void MainWindow::handleScanFinished(const QVector<WiFiNetwork> &networks, const 
 void MainWindow::handleScanError(const QString &message, const BandSupport &support)
 {
     scanInProgress = false;
-    refreshButton->setEnabled(true);
+    restoreRefreshButton();
     bandSupport = support;
     updateBandButtonVisibility();
     syncBandButtons();
@@ -444,6 +513,34 @@ QVector<QPointF> MainWindow::buildSpectrumEnvelope(const WiFiNetwork &network) c
         QPointF(centerChannel + halfWidth * 0.5, shoulderLevel),
         QPointF(centerChannel + halfWidth, baseLevel)
     };
+}
+
+QVector<WiFiNetwork> MainWindow::interferingNetworks(const WiFiNetwork &selected) const
+{
+    QVector<WiFiNetwork> interferers;
+    const qreal selectedLower = lowerChannelBoundary(selected.channel, selected.band);
+    const qreal selectedUpper = upperChannelBoundary(selected.channel, selected.band);
+
+    for (const WiFiNetwork &candidate : allNetworks) {
+        if (candidate.bssid == selected.bssid || candidate.band != selected.band) {
+            continue;
+        }
+
+        const qreal candidateLower = lowerChannelBoundary(candidate.channel, candidate.band);
+        const qreal candidateUpper = upperChannelBoundary(candidate.channel, candidate.band);
+        if (candidateLower <= selectedUpper && candidateUpper >= selectedLower) {
+            interferers.append(candidate);
+        }
+    }
+
+    std::sort(interferers.begin(), interferers.end(), [](const WiFiNetwork &left, const WiFiNetwork &right) {
+        if (left.signalDbm == right.signalDbm) {
+            return left.channel < right.channel;
+        }
+        return left.signalDbm > right.signalDbm;
+    });
+
+    return interferers;
 }
 
 QString MainWindow::bandLabel(WiFiBand band) const
@@ -534,6 +631,7 @@ void MainWindow::showInvalidState(const QString &message)
     band24Button->hide();
     band5Button->hide();
     band6Button->hide();
+    combinedBandButton->hide();
     invalidStateLabel->setText(message);
     invalidStateLabel->show();
     updateChart({});
@@ -541,14 +639,57 @@ void MainWindow::showInvalidState(const QString &message)
     setStatusMessage(QString());
 }
 
+void MainWindow::restoreRefreshButton()
+{
+    if (scanSpinnerTimer != nullptr) {
+        scanSpinnerTimer->stop();
+    }
+    refreshButton->setEnabled(true);
+    refreshButton->setText("Refresh Scan");
+    refreshButton->setIcon(QIcon());
+}
+
+void MainWindow::setRefreshButtonLoading(bool loading)
+{
+    refreshButton->setEnabled(!loading);
+    if (!loading) {
+        restoreRefreshButton();
+        return;
+    }
+
+    scanSpinnerFrame = 0;
+    refreshButton->setText("Scanning");
+    updateScanSpinner();
+    scanSpinnerTimer->start(120);
+}
+
+void MainWindow::updateScanSpinner()
+{
+    QPixmap pixmap(24, 24);
+    pixmap.fill(Qt::transparent);
+
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing);
+    QPen pen(palette().color(QPalette::ButtonText));
+    pen.setWidth(3);
+    pen.setCapStyle(Qt::RoundCap);
+    painter.setPen(pen);
+    painter.drawArc(QRect(4, 4, 16, 16), (scanSpinnerFrame * 30) * 16, 270 * 16);
+
+    refreshButton->setIcon(QIcon(pixmap));
+    scanSpinnerFrame = (scanSpinnerFrame + 1) % 12;
+}
+
 void MainWindow::syncBandButtons()
 {
     const QSignalBlocker block24(band24Button);
     const QSignalBlocker block5(band5Button);
     const QSignalBlocker block6(band6Button);
-    band24Button->setChecked(show24GHz);
-    band5Button->setChecked(show5GHz);
+    const QSignalBlocker blockCombined(combinedBandButton);
+    band24Button->setChecked(show24GHz && !show5GHz);
+    band5Button->setChecked(show5GHz && !show24GHz);
     band6Button->setChecked(show6GHz);
+    combinedBandButton->setChecked(show24GHz && show5GHz && !show6GHz);
 }
 
 void MainWindow::updateBandButtonVisibility()
@@ -556,6 +697,23 @@ void MainWindow::updateBandButtonVisibility()
     band24Button->setVisible(bandSupport.has24GHz);
     band5Button->setVisible(bandSupport.has5GHz);
     band6Button->setVisible(bandSupport.has6GHz);
+    updateCombinedBandAvailability();
+}
+
+void MainWindow::updateCombinedBandAvailability()
+{
+    if (combinedBandButton == nullptr) {
+        return;
+    }
+
+    const bool combinedAllowed = width() >= CombinedBandMinimumWidth && bandSupport.has24GHz && bandSupport.has5GHz;
+    combinedBandButton->setVisible(combinedAllowed);
+    if (!combinedAllowed && show24GHz && show5GHz) {
+        show5GHz = false;
+        show6GHz = false;
+        syncBandButtons();
+        applyFilters();
+    }
 }
 
 void MainWindow::updateChart(const QVector<WiFiNetwork> &networks)
@@ -605,31 +763,26 @@ void MainWindow::updateChart(const QVector<WiFiNetwork> &networks)
         areaSeries->attachAxis(axisY);
     }
 
-    const WiFiBand activeBand = activeBandFromFlags(show24GHz, show5GHz, show6GHz);
-    const QVector<int> standardChannels = standardChannelsForBand(activeBand);
-
-    int minChannel = standardChannels.first();
-    int maxChannel = standardChannels.last();
-    for (const WiFiNetwork &network : networks) {
-        minChannel = qMin(minChannel, network.channel);
-        maxChannel = qMax(maxChannel, network.channel);
-    }
+    const QVector<WiFiBand> activeBands = activeBandsFromFlags(show24GHz, show5GHz, show6GHz);
 
     clearCategoryAxis(axisX);
     bool axisStarted = false;
-    qreal axisStart = lowerChannelBoundary(standardChannels.first(), activeBand);
-    qreal axisEnd = upperChannelBoundary(standardChannels.last(), activeBand);
+    qreal axisStart = 0.5;
+    qreal axisEnd = 14.5;
 
-    for (int channel : standardChannels) {
-        const qreal lowerBoundary = lowerChannelBoundary(channel, activeBand);
-        const qreal upperBoundary = upperChannelBoundary(channel, activeBand);
-        if (!axisStarted) {
-            axisX->setStartValue(lowerBoundary);
-            axisStart = lowerBoundary;
-            axisStarted = true;
+    for (WiFiBand activeBand : activeBands) {
+        const QVector<int> standardChannels = standardChannelsForBand(activeBand);
+        for (int channel : standardChannels) {
+            const qreal lowerBoundary = lowerChannelBoundary(channel, activeBand);
+            const qreal upperBoundary = upperChannelBoundary(channel, activeBand);
+            if (!axisStarted) {
+                axisX->setStartValue(lowerBoundary);
+                axisStart = lowerBoundary;
+                axisStarted = true;
+            }
+            axisEnd = upperBoundary;
+            axisX->append(QString::number(channel), upperBoundary);
         }
-        axisEnd = upperBoundary;
-        axisX->append(QString::number(channel), upperBoundary);
     }
 
     axisX->setRange(axisStart, axisEnd);
@@ -682,6 +835,27 @@ void MainWindow::updateDetailTable(const WiFiNetwork &network)
     for (int row = 0; row < rows.size(); ++row) {
         detailTable->setItem(row, 0, new QTableWidgetItem(rows.at(row).first));
         detailTable->setItem(row, 1, new QTableWidgetItem(rows.at(row).second));
+    }
+
+    const QVector<WiFiNetwork> interferers = interferingNetworks(network);
+    interferenceLabel->setText(
+        interferers.isEmpty()
+            ? QStringLiteral("No overlapping SSIDs were found for this channel.")
+            : QStringLiteral("Interfering SSIDs (%1)").arg(interferers.size()));
+    interferenceTable->setRowCount(interferers.size());
+    for (int row = 0; row < interferers.size(); ++row) {
+        const WiFiNetwork &interferer = interferers.at(row);
+        interferenceTable->setItem(row, 0, new QTableWidgetItem(interferer.ssid));
+        interferenceTable->setItem(row, 1, new QTableWidgetItem(interferer.bssid));
+        interferenceTable->setItem(row, 2, new QTableWidgetItem(bandLabel(interferer.band)));
+
+        auto *channelItem = new SortableTableWidgetItem(channelLabel(interferer));
+        channelItem->setData(Qt::UserRole, interferer.channel);
+        interferenceTable->setItem(row, 3, channelItem);
+
+        auto *signalItem = new SortableTableWidgetItem(QString::number(interferer.signalDbm));
+        signalItem->setData(Qt::UserRole, interferer.signalDbm);
+        interferenceTable->setItem(row, 4, signalItem);
     }
 }
 
@@ -759,21 +933,37 @@ void MainWindow::updateTable(const QVector<WiFiNetwork> &networks)
         networkTable->setItem(row, 0, colorItem);
         networkTable->setItem(row, 1, new QTableWidgetItem(network.ssid));
         networkTable->setItem(row, 2, new QTableWidgetItem(network.bssid));
+        networkTable->setItem(row, 3, new QTableWidgetItem(bandLabel(network.band)));
 
         auto *channelItem = new SortableTableWidgetItem(channelLabel(network));
         channelItem->setData(Qt::UserRole, network.channel);
-        networkTable->setItem(row, 3, channelItem);
+        networkTable->setItem(row, 4, channelItem);
 
         auto *signalItem = new SortableTableWidgetItem(QString::number(network.signalDbm));
         signalItem->setData(Qt::UserRole, network.signalDbm);
-        networkTable->setItem(row, 4, signalItem);
+        networkTable->setItem(row, 5, signalItem);
 
         auto *frequencyItem = new SortableTableWidgetItem(QString::number(network.frequencyMHz));
         frequencyItem->setData(Qt::UserRole, network.frequencyMHz);
-        networkTable->setItem(row, 5, frequencyItem);
+        networkTable->setItem(row, 6, frequencyItem);
     }
 
     networkTable->setSortingEnabled(sortingEnabled);
+}
+
+void MainWindow::updateScanInterval(int index)
+{
+    if (scanTimer == nullptr) {
+        return;
+    }
+
+    const int intervalMs = scanIntervalCombo->itemData(index).toInt();
+    if (intervalMs <= 0) {
+        scanTimer->stop();
+        return;
+    }
+
+    scanTimer->start(intervalMs);
 }
 
 void MainWindow::setStatusMessage(const QString &message) const
